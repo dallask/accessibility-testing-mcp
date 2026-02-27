@@ -49,8 +49,41 @@ Configure via MCP config `env` section:
 | `BEST_PRACTICES` | `true`, `false` | `true` | Include best practices/recommendations |
 | `SCREEN_SIZES` | Comma-separated `WIDTHxHEIGHT` | `1280x1024` | Viewport sizes to test |
 | `HEADLESS_BROWSER` | `true`, `false` | `true` | Run browser in headless mode; set to `false` to open visible browser |
+| `MCP_TRANSPORT` | `stdio`, `http` | `stdio` | Use `http` to run as a remote MCP server (Streamable HTTP). |
+| `PORT` | number | `3000` | When `MCP_TRANSPORT=http`, the port to listen on. |
+| `CORS_ORIGIN` | origin string | `*` | Allowed CORS origin for HTTP transport (set in production). |
 
 The `WCAG_LEVEL` setting automatically configures both Axe-core tags and IBM Equal Access policies.
+
+### Running as a remote MCP server (HTTP)
+
+You can run the server over HTTP so clients (e.g. Claude Code, Cursor, other MCP clients) connect to it remotely instead of via stdio:
+
+```bash
+# Build and start HTTP server on port 3000
+npm run build
+MCP_TRANSPORT=http PORT=3000 node build/index.js
+# Or use the shortcut:
+npm run start:http
+```
+
+The MCP endpoint is **POST/GET** at `/mcp` (e.g. `http://localhost:3000/mcp`). The server uses **stateless Streamable HTTP** (one transport per request), so it is safe to run behind load balancers and scales horizontally.
+
+**Connect a client to the remote server:**
+
+- **Claude Code**: `claude mcp add --transport http my-a11y https://your-host/mcp`
+- **Cursor**: In MCP settings, add a remote server with URL `https://your-host/mcp` and transport `http`.
+
+### Hosting options for remote MCP
+
+| Option | Notes |
+|--------|------|
+| **Railway / Render / Fly.io** | Deploy as a Node.js web service. Set `MCP_TRANSPORT=http`, `PORT` to the platform’s assigned port (often `process.env.PORT`), and install Playwright/Chromium in the build (see platform docs). |
+| **Docker** | Use a Node image, install Playwright dependencies and Chromium, set `MCP_TRANSPORT=http` and expose the app port. |
+| **VPS (e.g. AWS EC2, DigitalOcean)** | Run `npm run start:http` behind nginx/Caddy as a reverse proxy; use HTTPS and set `CORS_ORIGIN` to your client’s origin. |
+| **Serverless (e.g. AWS Lambda)** | Possible but not ideal: cold starts and time limits can affect long-running scans; prefer a long-running container or VM. |
+
+**Requirements for remote hosting:** Chromium must be installed (e.g. `npx playwright install chromium`). For constrained environments, ensure enough memory and a supported Linux/glibc for Playwright.
 
 ### VS Code (GitHub Copilot)
 

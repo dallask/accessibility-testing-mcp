@@ -2,6 +2,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -230,20 +231,82 @@ interface ACEReport {
   results: ACEResultItem[];
 }
 
-// Create server instance
-const server = new Server(
-  {
-    name: "accessibility-testing-mcp",
-    version: "2.1.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-      resources: {},
-      prompts: {},
-    },
-  }
-);
+/** Registers all MCP request handlers on the given server instance. */
+function registerHandlers(srv: Server): void {
+  // List available tools
+  srv.setRequestHandler(ListToolsRequestSchema, async () => {
+    const configNote = `Engine: ${serverConfig.engine}, WCAG: ${serverConfig.wcagLevel}, Screens: ${serverConfig.screenSizes.map(sz => sz.label).join(", ")}`;
+
+    return {
+      tools: [
+        {
+          name: "analyze_url",
+          description: `Run accessibility tests on a URL and return detailed violation reports. [${configNote}]`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The URL to test for accessibility issues (must include http:// or https://)" },
+              engine: { type: "string", enum: ["axe", "ace"], description: "Testing engine. Defaults to server config." },
+              tags: { type: "array", items: { type: "string" }, description: "Override WCAG tags." },
+            },
+            required: ["url"],
+          },
+        },
+        {
+          name: "analyze_url_json",
+          description: `Run accessibility tests on a URL and return violations in raw JSON format. [${configNote}]`,
+          inputSchema: {
+            type: "object",
+            properties: { url: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+            required: ["url"],
+          },
+        },
+        {
+          name: "analyze_html",
+          description: `Run accessibility tests on raw HTML content. [${configNote}]`,
+          inputSchema: {
+            type: "object",
+            properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+            required: ["html"],
+          },
+        },
+        {
+          name: "analyze_html_json",
+          description: `Run accessibility tests on raw HTML and return violations in raw JSON. [${configNote}]`,
+          inputSchema: {
+            type: "object",
+            properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+            required: ["html"],
+          },
+        },
+        {
+          name: "get_rules",
+          description: `Get information about available accessibility rules. [${configNote}]`,
+          inputSchema: {
+            type: "object",
+            properties: { engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+          },
+        },
+      ],
+    };
+  });
+
+  srv.setRequestHandler(CallToolRequestSchema, toolCallHandler);
+  srv.setRequestHandler(ListResourcesRequestSchema, listResourcesHandler);
+  srv.setRequestHandler(ReadResourceRequestSchema, readResourceHandler);
+  srv.setRequestHandler(ListPromptsRequestSchema, listPromptsHandler);
+  srv.setRequestHandler(GetPromptRequestSchema, getPromptHandler);
+}
+
+/** Creates a new MCP server instance with all handlers registered. Used for both stdio and HTTP (one per request in stateless HTTP). */
+function createServer(): Server {
+  const s = new Server(
+    { name: "accessibility-testing-mcp", version: "2.1.0" },
+    { capabilities: { tools: {}, resources: {}, prompts: {} } }
+  );
+  registerHandlers(s);
+  return s;
+}
 
 // Helper function to format axe results
 function formatAxeResults(results: any, screenSize?: ScreenSize): string {
@@ -403,133 +466,10 @@ async function runACEAnalysis(content: string, label: string, policies?: string[
   }
 }
 
-// List available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const configNote = `Engine: ${serverConfig.engine}, WCAG: ${serverConfig.wcagLevel}, Screens: ${serverConfig.screenSizes.map(s => s.label).join(", ")}`;
-  
-  return {
-    tools: [
-      {
-        name: "analyze_url",
-        description: `Run accessibility tests on a URL and return detailed violation reports. [${configNote}]`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            url: {
-              type: "string",
-              description: "The URL to test for accessibility issues (must include http:// or https://)",
-            },
-            engine: {
-              type: "string",
-              enum: ["axe", "ace"],
-              description: "Testing engine: 'axe' (axe-core) or 'ace' (IBM Equal Access). Defaults to server config.",
-            },
-            tags: {
-              type: "array",
-              items: { type: "string" },
-              description: "Override WCAG tags. For Axe: ['wcag2a', 'wcag2aa', 'best-practice']. For ACE: ['WCAG_2_1', 'WCAG_2_2']",
-            },
-          },
-          required: ["url"],
-        },
-      },
-      {
-        name: "analyze_url_json",
-        description: `Run accessibility tests on a URL and return violations in raw JSON format. [${configNote}]`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            url: {
-              type: "string",
-              description: "The URL to test for accessibility issues (must include http:// or https://)",
-            },
-            engine: {
-              type: "string",
-              enum: ["axe", "ace"],
-              description: "Testing engine: 'axe' (axe-core) or 'ace' (IBM Equal Access). Defaults to server config.",
-            },
-            tags: {
-              type: "array",
-              items: { type: "string" },
-              description: "Override WCAG tags. For Axe: ['wcag2a', 'wcag2aa', 'best-practice']. For ACE: ['WCAG_2_1', 'WCAG_2_2']",
-            },
-          },
-          required: ["url"],
-        },
-      },
-      {
-        name: "analyze_html",
-        description: `Run accessibility tests on raw HTML content. [${configNote}]`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            html: {
-              type: "string",
-              description: "The HTML content to test for accessibility issues",
-            },
-            engine: {
-              type: "string",
-              enum: ["axe", "ace"],
-              description: "Testing engine: 'axe' (axe-core) or 'ace' (IBM Equal Access). Defaults to server config.",
-            },
-            tags: {
-              type: "array",
-              items: { type: "string" },
-              description: "Override WCAG tags. For Axe: ['wcag2a', 'wcag2aa', 'best-practice']. For ACE: ['WCAG_2_1', 'WCAG_2_2']",
-            },
-          },
-          required: ["html"],
-        },
-      },
-      {
-        name: "analyze_html_json",
-        description: `Run accessibility tests on raw HTML content and return violations in raw JSON format. [${configNote}]`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            html: {
-              type: "string",
-              description: "The HTML content to test for accessibility issues",
-            },
-            engine: {
-              type: "string",
-              enum: ["axe", "ace"],
-              description: "Testing engine: 'axe' (axe-core) or 'ace' (IBM Equal Access). Defaults to server config.",
-            },
-            tags: {
-              type: "array",
-              items: { type: "string" },
-              description: "Override WCAG tags. For Axe: ['wcag2a', 'wcag2aa', 'best-practice']. For ACE: ['WCAG_2_1', 'WCAG_2_2']",
-            },
-          },
-          required: ["html"],
-        },
-      },
-      {
-        name: "get_rules",
-        description: `Get information about available accessibility rules for the specified engine. [${configNote}]`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            engine: {
-              type: "string",
-              enum: ["axe", "ace"],
-              description: "Testing engine to get rules for. Defaults to server config.",
-            },
-            tags: {
-              type: "array",
-              items: { type: "string" },
-              description: "Optional array of tags to filter rules (e.g., ['wcag2a', 'wcag2aa', 'wcag21aa'])",
-            },
-          },
-        },
-      },
-    ],
-  };
-});
-
-// Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+// Tool call handler (shared by createServer)
+async function toolCallHandler(
+  request: { params: { name: string; arguments?: Record<string, unknown> } }
+) {
   const { name, arguments: args } = request.params;
   const engine = (args?.engine as Engine) || serverConfig.engine;
 
@@ -809,10 +749,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   throw new Error(`Unknown tool: ${name}`);
-});
+}
 
-// List available resources
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
+async function listResourcesHandler() {
   return {
     resources: [
       {
@@ -835,10 +774,9 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
       },
     ],
   };
-});
+}
 
-// Read resource contents
-server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+async function readResourceHandler(request: { params: { uri: string } }) {
   const { uri } = request.params;
 
   if (uri === "a11y://wcag-guidelines") {
@@ -991,10 +929,9 @@ Use **IBM Equal Access** when you need:
   }
 
   throw new Error(`Unknown resource: ${uri}`);
-});
+}
 
-// List available prompts
-server.setRequestHandler(ListPromptsRequestSchema, async () => {
+async function listPromptsHandler() {
   return {
     prompts: [
       {
@@ -1026,10 +963,9 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => {
       },
     ],
   };
-});
+}
 
-// Get prompt by name
-server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+async function getPromptHandler(request: { params: { name: string; arguments?: Record<string, unknown> } }) {
   const { name, arguments: args } = request.params;
 
   if (name === "accessibility_review") {
@@ -1082,14 +1018,73 @@ Make the explanation clear and actionable.`,
   }
 
   throw new Error(`Unknown prompt: ${name}`);
-});
+}
 
-// Start the server
+// Start the server (stdio or HTTP based on MCP_TRANSPORT)
 async function main() {
+  const transportType = (process.env.MCP_TRANSPORT || "stdio").toLowerCase();
+
+  if (transportType === "http") {
+    const express = (await import("express")).default;
+    const cors = (await import("cors")).default;
+    const app = express();
+    const PORT = parseInt(process.env.PORT || "3000", 10);
+
+    app.use(express.json({ limit: "10mb" }));
+    app.use(
+      cors({
+        origin: process.env.CORS_ORIGIN || "*",
+        exposedHeaders: ["Mcp-Session-Id"],
+      })
+    );
+
+    app.post("/mcp", async (req: import("express").Request, res: import("express").Response) => {
+      const server = createServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+      });
+      try {
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        console.error("MCP HTTP request error:", error);
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal server error" },
+            id: null,
+          });
+        }
+      } finally {
+        res.on("close", () => {
+          transport.close();
+        });
+      }
+    });
+
+    app.get("/mcp", (_req: import("express").Request, res: import("express").Response) => {
+      res.status(405).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Method not allowed." },
+        id: null,
+      });
+    });
+
+    app.listen(PORT, () => {
+      console.error(
+        `Accessibility Testing MCP Server (HTTP) on http://0.0.0.0:${PORT}/mcp (Engine: ${serverConfig.engine})`
+      );
+    });
+    return;
+  }
+
+  // Default: stdio
+  const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  
-  console.error(`Accessibility Testing MCP Server v2.0.0 running on stdio (Engine: ${serverConfig.engine})`);
+  console.error(
+    `Accessibility Testing MCP Server v2.1.0 running on stdio (Engine: ${serverConfig.engine})`
+  );
 }
 
 main().catch((error) => {
