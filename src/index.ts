@@ -460,8 +460,8 @@ function aceToAxeViolationsFormat(report: ACEReport): any[] {
 async function runACEAnalysis(content: string, label: string, policies?: string[]): Promise<ACEReport> {
   // Dynamic import for accessibility-checker (ESM compatibility)
   const aChecker = await import("accessibility-checker");
-  // Required for Puppeteer when running as root (e.g. Docker/Railway)
-  await aChecker.setConfig({ puppeteerArgs: CHROMIUM_LAUNCH_ARGS });
+  // Required for Puppeteer when running as root (e.g. Docker/Railway). puppeteerArgs is supported at runtime (IConfigInternal); public API types IConfig only.
+  await aChecker.setConfig({ puppeteerArgs: CHROMIUM_LAUNCH_ARGS } as any);
 
   try {
     const result = await aChecker.getCompliance(content, label);
