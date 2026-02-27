@@ -231,65 +231,64 @@ interface ACEReport {
   results: ACEResultItem[];
 }
 
+/** Returns the list of tools (shared by normal handler and config-compatibility response). */
+function getToolsList(): Array<{ name: string; description: string; inputSchema: object }> {
+  const configNote = `Engine: ${serverConfig.engine}, WCAG: ${serverConfig.wcagLevel}, Screens: ${serverConfig.screenSizes.map(sz => sz.label).join(", ")}`;
+  return [
+    {
+      name: "analyze_url",
+      description: `Run accessibility tests on a URL and return detailed violation reports. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to test for accessibility issues (must include http:// or https://)" },
+          engine: { type: "string", enum: ["axe", "ace"], description: "Testing engine. Defaults to server config." },
+          tags: { type: "array", items: { type: "string" }, description: "Override WCAG tags." },
+        },
+        required: ["url"],
+      },
+    },
+    {
+      name: "analyze_url_json",
+      description: `Run accessibility tests on a URL and return violations in raw JSON format. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { url: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+        required: ["url"],
+      },
+    },
+    {
+      name: "analyze_html",
+      description: `Run accessibility tests on raw HTML content. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+        required: ["html"],
+      },
+    },
+    {
+      name: "analyze_html_json",
+      description: `Run accessibility tests on raw HTML and return violations in raw JSON. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+        required: ["html"],
+      },
+    },
+    {
+      name: "get_rules",
+      description: `Get information about available accessibility rules. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+      },
+    },
+  ];
+}
+
 /** Registers all MCP request handlers on the given server instance. */
 function registerHandlers(srv: Server): void {
-  // List available tools
-  srv.setRequestHandler(ListToolsRequestSchema, async () => {
-    const configNote = `Engine: ${serverConfig.engine}, WCAG: ${serverConfig.wcagLevel}, Screens: ${serverConfig.screenSizes.map(sz => sz.label).join(", ")}`;
-
-    return {
-      tools: [
-        {
-          name: "analyze_url",
-          description: `Run accessibility tests on a URL and return detailed violation reports. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: {
-              url: { type: "string", description: "The URL to test for accessibility issues (must include http:// or https://)" },
-              engine: { type: "string", enum: ["axe", "ace"], description: "Testing engine. Defaults to server config." },
-              tags: { type: "array", items: { type: "string" }, description: "Override WCAG tags." },
-            },
-            required: ["url"],
-          },
-        },
-        {
-          name: "analyze_url_json",
-          description: `Run accessibility tests on a URL and return violations in raw JSON format. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { url: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-            required: ["url"],
-          },
-        },
-        {
-          name: "analyze_html",
-          description: `Run accessibility tests on raw HTML content. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-            required: ["html"],
-          },
-        },
-        {
-          name: "analyze_html_json",
-          description: `Run accessibility tests on raw HTML and return violations in raw JSON. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-            required: ["html"],
-          },
-        },
-        {
-          name: "get_rules",
-          description: `Get information about available accessibility rules. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-          },
-        },
-      ],
-    };
-  });
+  srv.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getToolsList() }));
 
   srv.setRequestHandler(CallToolRequestSchema, toolCallHandler);
   srv.setRequestHandler(ListResourcesRequestSchema, listResourcesHandler);
@@ -1038,7 +1037,168 @@ async function main() {
       })
     );
 
-    app.post("/mcp", async (req: import("express").Request, res: import("express").Response) => {
+    // Ensure Accept header satisfies MCP Streamable HTTP (some clients omit it)
+    app.use("/mcp", (req, _res, next) => {
+      const accept = req.get("accept") || "";
+      if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+        req.headers.accept = [
+          accept ? accept : "",
+          "application/json",
+          "text/event-stream",
+        ]
+          .filter(Boolean)
+          .join(", ");
+      }
+      next();
+    });
+
+    const handleMcpPost = async (req: import("express").Request, res: import("express").Response) => {
+      const body = req.body as Record<string, unknown> | undefined;
+      // Reject config-style payloads: MCP HTTP expects JSON-RPC 2.0 messages, not server config
+      const looksLikeConfig =
+        body &&
+        typeof body === "object" &&
+        (Object.prototype.hasOwnProperty.call(body, "serverPath") ||
+          Object.prototype.hasOwnProperty.call(body, "args") ||
+          Object.prototype.hasOwnProperty.call(body, "mcp_headers"));
+      const looksLikeJsonRpc =
+        body &&
+        typeof body === "object" &&
+        body.jsonrpc === "2.0" &&
+        Object.prototype.hasOwnProperty.call(body, "method");
+
+      // CodeMie/MCP-Connect: bridge payload has serverPath, params: { name, arguments }, mcp_headers.
+      // If params.name is a tool name → run tool and return content. If params.name is list_tools or missing → return tools list.
+      const params = body && typeof body.params === "object" && body.params !== null ? (body.params as Record<string, unknown>) : null;
+      const toolName =
+        (params && typeof params.name === "string" && params.name) ||
+        (params && typeof (params as Record<string, unknown>).tool === "string" && (params as Record<string, unknown>).tool) ||
+        (body && typeof (body as Record<string, unknown>).name === "string" && (body as Record<string, unknown>).name);
+      const toolArgs =
+        (params && (params.arguments as Record<string, unknown>)) ||
+        (body && (body as Record<string, unknown>).arguments as Record<string, unknown>) ||
+        undefined;
+      const isToolInvocation =
+        toolName &&
+        String(toolName).length > 0 &&
+        /^(analyze_url|analyze_url_json|analyze_html|analyze_html_json|get_rules)$/i.test(String(toolName));
+
+      // Bridge/config payload: either run tool (return content) or return tools list (MCPListToolsResponse).
+      if (looksLikeConfig && !looksLikeJsonRpc) {
+        if (isToolInvocation) {
+          const id = body && body.id !== undefined ? body.id : null;
+          try {
+            const result = await toolCallHandler({ params: { name: String(toolName), arguments: toolArgs } });
+            const content = result?.content ?? [];
+            res.status(200).setHeader("Content-Type", "application/json").json({
+              jsonrpc: "2.0",
+              id,
+              result: { content },
+              content,
+            });
+            return;
+          } catch (err) {
+            console.error("MCP tool call error:", err);
+            if (!res.headersSent) {
+              const message = err instanceof Error ? err.message : String(err);
+              res.status(200).setHeader("Content-Type", "application/json").json({
+                jsonrpc: "2.0",
+                id: body?.id ?? null,
+                error: { code: -32603, message },
+                content: [{ type: "text" as const, text: `Error: ${message}` }],
+              });
+            }
+            return;
+          }
+        }
+        // Load tools: return tools list with top-level "tools" for MCPListToolsResponse
+        const id = body && typeof body === "object" && (body.id !== undefined) ? body.id : 1;
+        const tools = getToolsList();
+        res.status(200).json({
+          jsonrpc: "2.0",
+          id,
+          result: { tools },
+          tools,
+        });
+        return;
+      }
+
+      // JSON-RPC tool invocation (method tools/call or similar)
+      if (isToolInvocation) {
+        const id = body && body.id !== undefined ? body.id : null;
+        try {
+          const result = await toolCallHandler({ params: { name: String(toolName), arguments: toolArgs } });
+          const content = result?.content ?? [];
+          const payload = {
+            jsonrpc: "2.0",
+            id,
+            result: { content },
+            content,
+          };
+          res.status(200).setHeader("Content-Type", "application/json").json(payload);
+          return;
+        } catch (err) {
+          console.error("MCP tool call error:", err);
+          if (!res.headersSent) {
+            const message = err instanceof Error ? err.message : String(err);
+            res.status(200).setHeader("Content-Type", "application/json").json({
+              jsonrpc: "2.0",
+              id,
+              error: { code: -32603, message },
+              content: [{ type: "text" as const, text: `Error: ${message}` }],
+            });
+          }
+          return;
+        }
+      }
+
+      // Wrap res to add top-level "content" for codemie/MCP-Connect (MCPToolInvocationResponse expects it).
+      const chunks: Buffer[] = [];
+      const originalWrite = res.write.bind(res);
+      const originalEnd = res.end.bind(res);
+      res.write = function (chunk: unknown, ...args: unknown[]): boolean {
+        if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        return true;
+      };
+      res.end = function (chunk?: unknown, ...args: unknown[]): import("express").Response {
+        if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        const raw = Buffer.concat(chunks).toString("utf8");
+        let out: string | Buffer = raw;
+        try {
+          let jsonStr = raw.trim();
+          const dataIdx = raw.indexOf("data: ");
+          if (dataIdx !== -1) {
+            const after = raw.slice(dataIdx + 6);
+            const eventEnd = after.indexOf("\n\n");
+            jsonStr = eventEnd === -1 ? after.trim() : after.slice(0, eventEnd).trim();
+          }
+          const data = JSON.parse(jsonStr) as Record<string, unknown>;
+          const result = data?.result as Record<string, unknown> | undefined;
+          let modified = false;
+          // MCPListToolsResponse: add top-level "tools" when result has tools
+          if (data && result && Array.isArray(result.tools) && !Object.prototype.hasOwnProperty.call(data, "tools")) {
+            (data as Record<string, unknown>).tools = result.tools;
+            modified = true;
+          }
+          // MCPToolInvocationResponse: add top-level "content" when result has content
+          const contentFromResult = result && (Array.isArray(result.content) ? result.content : Array.isArray(result.contents) ? result.contents : null);
+          if (data && contentFromResult && !Object.prototype.hasOwnProperty.call(data, "content")) {
+            (data as Record<string, unknown>).content = contentFromResult;
+            modified = true;
+          }
+          if (modified) {
+            const modifiedStr = JSON.stringify(data);
+            out = dataIdx !== -1 ? raw.replace(raw.slice(dataIdx), "data: " + modifiedStr + "\n\n") : modifiedStr;
+          }
+        } catch (_) {
+          /* leave out as raw */
+        }
+        res.write = originalWrite;
+        res.end = originalEnd;
+        if (!res.headersSent) res.setHeader("Content-Type", res.getHeader("Content-Type") || "application/json");
+        return originalEnd(out, ...(args as [any?, any?])) as import("express").Response;
+      };
+
       const server = createServer();
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -1060,15 +1220,21 @@ async function main() {
           transport.close();
         });
       }
-    });
+    };
 
-    app.get("/mcp", (_req: import("express").Request, res: import("express").Response) => {
+    const rejectGet = (_req: import("express").Request, res: import("express").Response) => {
       res.status(405).json({
         jsonrpc: "2.0",
         error: { code: -32000, message: "Method not allowed." },
         id: null,
       });
-    });
+    };
+
+    app.post("/mcp", handleMcpPost);
+    app.get("/mcp", rejectGet);
+    // Some clients (e.g. Cursor) use /mcp/bridge for the MCP HTTP endpoint
+    app.post("/mcp/bridge", handleMcpPost);
+    app.get("/mcp/bridge", rejectGet);
 
     app.listen(PORT, () => {
       console.error(
