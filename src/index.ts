@@ -234,65 +234,67 @@ interface ACEReport {
   results: ACEResultItem[];
 }
 
+/** Tool names supported by this server (for CodeMie bridge). */
+const TOOL_NAMES = ["analyze_url", "analyze_url_json", "analyze_html", "analyze_html_json", "get_rules"] as const;
+
+/** Returns the list of tools (shared by MCP list handler and CodeMie /mcp/bridge). */
+function getToolsList(): Array<{ name: string; description: string; inputSchema: object }> {
+  const configNote = `Engine: ${serverConfig.engine}, WCAG: ${serverConfig.wcagLevel}, Screens: ${serverConfig.screenSizes.map(sz => sz.label).join(", ")}`;
+  return [
+    {
+      name: "analyze_url",
+      description: `Run accessibility tests on a URL and return detailed violation reports. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to test for accessibility issues (must include http:// or https://)" },
+          engine: { type: "string", enum: ["axe", "ace"], description: "Testing engine. Defaults to server config." },
+          tags: { type: "array", items: { type: "string" }, description: "Override WCAG tags." },
+        },
+        required: ["url"],
+      },
+    },
+    {
+      name: "analyze_url_json",
+      description: `Run accessibility tests on a URL and return violations in raw JSON format. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { url: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+        required: ["url"],
+      },
+    },
+    {
+      name: "analyze_html",
+      description: `Run accessibility tests on raw HTML content. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+        required: ["html"],
+      },
+    },
+    {
+      name: "analyze_html_json",
+      description: `Run accessibility tests on raw HTML and return violations in raw JSON. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+        required: ["html"],
+      },
+    },
+    {
+      name: "get_rules",
+      description: `Get information about available accessibility rules. [${configNote}]`,
+      inputSchema: {
+        type: "object",
+        properties: { engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
+      },
+    },
+  ];
+}
+
 /** Registers all MCP request handlers on the given server instance. */
 function registerHandlers(srv: Server): void {
-  // List available tools
-  srv.setRequestHandler(ListToolsRequestSchema, async () => {
-    const configNote = `Engine: ${serverConfig.engine}, WCAG: ${serverConfig.wcagLevel}, Screens: ${serverConfig.screenSizes.map(sz => sz.label).join(", ")}`;
-
-    return {
-      tools: [
-        {
-          name: "analyze_url",
-          description: `Run accessibility tests on a URL and return detailed violation reports. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: {
-              url: { type: "string", description: "The URL to test for accessibility issues (must include http:// or https://)" },
-              engine: { type: "string", enum: ["axe", "ace"], description: "Testing engine. Defaults to server config." },
-              tags: { type: "array", items: { type: "string" }, description: "Override WCAG tags." },
-            },
-            required: ["url"],
-          },
-        },
-        {
-          name: "analyze_url_json",
-          description: `Run accessibility tests on a URL and return violations in raw JSON format. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { url: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-            required: ["url"],
-          },
-        },
-        {
-          name: "analyze_html",
-          description: `Run accessibility tests on raw HTML content. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-            required: ["html"],
-          },
-        },
-        {
-          name: "analyze_html_json",
-          description: `Run accessibility tests on raw HTML and return violations in raw JSON. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { html: { type: "string" }, engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-            required: ["html"],
-          },
-        },
-        {
-          name: "get_rules",
-          description: `Get information about available accessibility rules. [${configNote}]`,
-          inputSchema: {
-            type: "object",
-            properties: { engine: { type: "string", enum: ["axe", "ace"] }, tags: { type: "array", items: { type: "string" } } },
-          },
-        },
-      ],
-    };
-  });
+  srv.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getToolsList() }));
 
   srv.setRequestHandler(CallToolRequestSchema, toolCallHandler);
   srv.setRequestHandler(ListResourcesRequestSchema, listResourcesHandler);
@@ -1075,9 +1077,59 @@ async function main() {
       });
     });
 
+    // CodeMie MCP-Connect–style bridge: single POST with params.name + params.arguments; response includes top-level content/tools for Pydantic.
+    app.post("/mcp/bridge", async (req: import("express").Request, res: import("express").Response) => {
+      try {
+        const body = req.body || {};
+        const params = body.params ?? {};
+        const name = typeof params.name === "string" ? params.name.trim() : "";
+        const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
+
+        if (!name || name === "list_tools") {
+          const tools = getToolsList();
+          return res.status(200).json({
+            tools,
+            result: { tools },
+          });
+        }
+
+        if (!TOOL_NAMES.includes(name as (typeof TOOL_NAMES)[number])) {
+          return res.status(400).json({
+            error: "unknown_tool",
+            message: `Unknown tool: ${name}. Use list_tools or omit params.name to list tools.`,
+            result: { content: [{ type: "text", text: `Unknown tool: ${name}` }] },
+            content: [{ type: "text", text: `Unknown tool: ${name}` }],
+          });
+        }
+
+        const result = await toolCallHandler({ params: { name, arguments: args } });
+        const content = result.content ?? [];
+        return res.status(200).json({
+          content,
+          result: { content },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("MCP bridge error:", error);
+        const content = [{ type: "text" as const, text: message }];
+        return res.status(200).json({
+          content,
+          result: { content },
+          error: message,
+        });
+      }
+    });
+
+    app.get("/mcp/bridge", (_req: import("express").Request, res: import("express").Response) => {
+      res.status(405).json({
+        error: "method_not_allowed",
+        message: "Use POST with body: { params: { name?, arguments? }, mcp_headers?, env? }.",
+      });
+    });
+
     app.listen(PORT, () => {
       console.error(
-        `Accessibility Testing MCP Server (HTTP) on http://0.0.0.0:${PORT}/mcp (Engine: ${serverConfig.engine})`
+        `Accessibility Testing MCP Server (HTTP) on http://0.0.0.0:${PORT}/mcp and /mcp/bridge (Engine: ${serverConfig.engine})`
       );
     });
     return;
