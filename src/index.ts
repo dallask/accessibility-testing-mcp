@@ -24,6 +24,9 @@ const AXE_CORE_PATH = join(__dirname, "../node_modules/axe-core/axe.min.js");
 // Configuration
 const NAVIGATION_TIMEOUT = 90000; // 90 seconds for complex sites
 
+// Chromium launch args for container/root environments (e.g. Docker, Railway)
+const CHROMIUM_LAUNCH_ARGS = ["--no-sandbox", "--disable-setuid-sandbox"];
+
 // Engine types
 type Engine = "axe" | "ace";
 
@@ -457,7 +460,9 @@ function aceToAxeViolationsFormat(report: ACEReport): any[] {
 async function runACEAnalysis(content: string, label: string, policies?: string[]): Promise<ACEReport> {
   // Dynamic import for accessibility-checker (ESM compatibility)
   const aChecker = await import("accessibility-checker");
-  
+  // Required for Puppeteer when running as root (e.g. Docker/Railway)
+  await aChecker.setConfig({ puppeteerArgs: CHROMIUM_LAUNCH_ARGS });
+
   try {
     const result = await aChecker.getCompliance(content, label);
     return result.report as unknown as ACEReport;
@@ -495,7 +500,7 @@ async function toolCallHandler(
     }
 
     // Use Axe-core - test each screen size
-    const browser = await chromium.launch({ headless: serverConfig.headless });
+    const browser = await chromium.launch({ headless: serverConfig.headless, args: CHROMIUM_LAUNCH_ARGS });
     try {
       for (const screenSize of serverConfig.screenSizes) {
         const page = await browser.newPage();
@@ -553,7 +558,7 @@ async function toolCallHandler(
       };
     }
 
-    const browser = await chromium.launch({ headless: serverConfig.headless });
+    const browser = await chromium.launch({ headless: serverConfig.headless, args: CHROMIUM_LAUNCH_ARGS });
     try {
       for (const screenSize of serverConfig.screenSizes) {
         const page = await browser.newPage();
@@ -607,7 +612,7 @@ async function toolCallHandler(
       };
     }
 
-    const browser = await chromium.launch({ headless: serverConfig.headless });
+    const browser = await chromium.launch({ headless: serverConfig.headless, args: CHROMIUM_LAUNCH_ARGS });
     try {
       const page = await browser.newPage();
       await page.setContent(html, { 
@@ -651,7 +656,7 @@ async function toolCallHandler(
       };
     }
 
-    const browser = await chromium.launch({ headless: serverConfig.headless });
+    const browser = await chromium.launch({ headless: serverConfig.headless, args: CHROMIUM_LAUNCH_ARGS });
     try {
       const page = await browser.newPage();
       await page.setContent(html, { 
@@ -708,7 +713,7 @@ async function toolCallHandler(
       };
     }
 
-    const browser = await chromium.launch({ headless: serverConfig.headless });
+    const browser = await chromium.launch({ headless: serverConfig.headless, args: CHROMIUM_LAUNCH_ARGS });
     try {
       const page = await browser.newPage();
       await page.setContent("<html><body></body></html>");
