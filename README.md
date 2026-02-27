@@ -78,12 +78,40 @@ The MCP endpoint is **POST/GET** at `/mcp` (e.g. `http://localhost:3000/mcp`). T
 
 | Option | Notes |
 |--------|------|
-| **Railway / Render / Fly.io** | Deploy as a Node.js web service. Set `MCP_TRANSPORT=http`, `PORT` to the platform’s assigned port (often `process.env.PORT`), and install Playwright/Chromium in the build (see platform docs). |
+| **Railway** | Use the repo **Dockerfile** (Builder = Dockerfile in settings). Set `MCP_TRANSPORT=http`; the image installs Chromium and system deps so `analyze_url` works. |
 | **Docker** | Use a Node image, install Playwright dependencies and Chromium, set `MCP_TRANSPORT=http` and expose the app port. |
 | **VPS (e.g. AWS EC2, DigitalOcean)** | Run `npm run start:http` behind nginx/Caddy as a reverse proxy; use HTTPS and set `CORS_ORIGIN` to your client’s origin. |
 | **Serverless (e.g. AWS Lambda)** | Possible but not ideal: cold starts and time limits can affect long-running scans; prefer a long-running container or VM. |
 
-**Requirements for remote hosting:** Chromium must be installed (e.g. `npx playwright install chromium`). For constrained environments, ensure enough memory and a supported Linux/glibc for Playwright.
+### Deploy to Railway (step-by-step)
+
+Railway’s default Node/Nixpacks image does **not** include the system libraries Chromium needs (e.g. `libgobject-2.0.so.0`). Use the repo’s **Dockerfile** so the browser works after deploy.
+
+1. **Connect the repo**
+   - Go to [railway.app](https://railway.app) and sign in (e.g. with GitHub).
+   - **New Project** → **Deploy from GitHub repo**.
+   - Select the `accessibility-testing-mcp` repository (and branch, e.g. `main`).
+
+2. **Use Docker build**
+   - In the service: **Settings** → **Build** (or **Deploy**).
+   - Set **Builder** to **Dockerfile** (so Railway builds from the repo’s `Dockerfile` instead of Nixpacks).
+   - The Dockerfile installs Node, Chromium, and system dependencies (`playwright install --with-deps chromium`), then builds and runs the app.
+
+3. **Set environment variables**
+   - **Variables** (or **Settings** → **Environment**): add **`MCP_TRANSPORT`** = **`http`**.
+   - Do **not** set `PORT`; Railway sets it. The app uses `process.env.PORT`.
+
+4. **Start command**
+   - No need to set a custom start command; the Dockerfile runs **`node build/index.js`**.
+
+5. **Get the URL**
+   - **Settings** → **Networking** → **Generate domain** (e.g. `your-app.up.railway.app`).
+   - MCP endpoint: **`https://<your-app.up.railway.app>/mcp`** (or **`/mcp/bridge`** for CodeMie).
+
+6. **Use in CodeMie**
+   - Add an MCP server: type **Streamable HTTP**, URL **`https://<your-app.up.railway.app>/mcp`**.
+
+**If you see “libgobject-2.0.so.0: cannot open shared object file”:** the runtime image is missing Chromium’s system libraries. Deploy using the **Dockerfile** (step 2) so Railway uses a image that runs `playwright install --with-deps chromium`.
 
 ### VS Code (GitHub Copilot)
 
